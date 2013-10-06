@@ -4,11 +4,14 @@ use Mojo::Base -base;
 
 use Carp 'croak';
 use DateTime;
+use DateTime::Duration;
 use Mojo::Log;
 use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 
-our $VERSION = '0.01';
+no warnings 'experimental::smartmatch';
+
+our $VERSION = '0.02';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -38,19 +41,18 @@ sub get_options {
 
 	return {
 		query => {
-			status => 'Pending'
-	#		'$or' => [{
-	#			status => {
-	#				'$in' => [ 'Pending' ]
-	#			}
-	#		},{
-	#			status => {
-	#				'$in' => [ 'Retrieved' ]
-	#			},
-	#			retrieved => {
-	#				'$gt' => DateTime->now->subtract()
-	#			}
-	#		}]
+			'$or' => [{
+				status => {
+					'$in' => [ 'Pending' ]
+				}
+			},{
+				status => {
+					'$in' => [ 'Retrieved' ]
+				},
+				retrieved => {
+					'$lt' => DateTime->now->subtract_duration(DateTime::Duration->new(seconds => $self->timeout))
+				}
+			}]
 		},
 		update => {
 			'$set' => {
@@ -88,15 +90,97 @@ sub enqueue {
 		created => $args{created} // DateTime->now,
 		data => $job,
 		status => $args{status} // 'Pending',
+		attempt => 1,
 	};
 
+	# TODO allow non-blocking enqueue
 	my $id = $self->collection->insert($db_job);
 
+	return $id;
+}
+
+sub monitor {
+	my ($self, $id, $status, $callback) = @_;
+
+	$status //= 'Complete';
+
+	# args
+	# - wait $queue $id, 'Status' => $callback
+
 	if($callback) {
-		# TODO monitor state
+		# Non-blocking
+		$self->log->debug("Waiting for $id on status $status in non-blocking mode");
+		return Mojo::IOLoop->timer(0 => sub { $self->_monitor_nonblocking($id, $status, $callback) });
+	} else {
+		# Blocking
+		$self->log->debug("Waiting for $id on status $status in blocking mode");
+		return $self->_monitor_blocking($id, $status);
 	}
+}
+
+sub _monitor_blocking {
+	my ($self, $id, $status) = @_;
+
+	while(1) {
+		my $doc = $self->collection->find_one({'_id' => $id});
+		$self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
+
+		if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && $doc->{status} ~~ @$status))) {
+			return 1;
+		} else {
+			$self->delay->wait;
+		}
+	}
+}
+
+sub _monitor_nonblocking {
+	my ($self, $id, $status, $callback) = @_;
+
+	$self->collection->find_one({'_id' => $id} => sub {
+		my ($cursor, $err, $doc) = @_;
+		$self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
+		
+		if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && $doc->{status} ~~ @$status))) {
+			$self->log->debug("Status is $status");
+			$self->delay->reset;
+			$callback->($doc);
+		} else {
+			$self->log->debug("Job not found or status doesn't match");
+			$self->delay->wait(sub {
+				return unless Mojo::IOLoop->is_running;
+				Mojo::IOLoop->timer(0 => sub { $self->_monitor_nonblocking($id, $status, $callback) });
+			});
+			return undef;
+		}
+	});
+}
+
+sub requeue {
+	my ($self, $job) = @_;
+
+	$job->{status} = 'Pending';
+	my $id = $self->collection->update({'_id' => $job->{_id}}, $job, {upsert => 1});
 
 	return $id;
+
+	# TODO non-blocking
+}
+
+sub dequeue {
+	my ($self, $id) = @_;
+
+	# TODO option to not remove on dequeue?
+	# TODO non-blocking
+
+	$self->collection->remove({'_id' => $id});
+}
+
+sub get {
+	my ($self, $id) = @_;
+
+	# TODO non-blocking
+
+	return $self->collection->find_one({'_id' => $id});
 }
 
 sub fetch {
@@ -213,6 +297,22 @@ MangoX::Queue - A MongoDB queue implementation using Mango
 	enqueue $queue priority => 1, created => DateTime->now, 'job_name';
 	$queue->enqueue(priority => 1, created => DateTime->now, 'job_name');
 
+	# To wait for a job status change (non-blocking)
+	my $id = enqueue $queue 'test';
+	monitor $queue $id, 'Complete' => sub {
+		# Job status is 'Complete'
+	};
+
+	# To wait on mutliple statuses (non-blocking)
+	my $id = enqueue $queue 'test';
+	monitor $queue $id, ['Complete', 'Failed'] => sub {
+		# Job status is 'Complete' or 'Failed'
+	};
+
+	# To wait for a job status change (blocking)
+	my $id = enqueue $queue 'test';
+	monitor $queue $id, 'Complete';
+
 	# To fetch a job (blocking)
 	my $job = fetch $queue;
 	my $job = $queue->fetch;
@@ -226,6 +326,19 @@ MangoX::Queue - A MongoDB queue implementation using Mango
 		my ($job) = @_;
 		# ...
 	});
+
+	# To get a job by id (currently blocking)
+	my $id = enqueue $queue 'test';
+	my $job = get $queue $id;
+
+	# To requeue a job (currently blocking)
+	my $id = enqueue $queue 'test';
+	my $job = get $queue $id;
+	requeue $queue $job;
+
+	# To dequeue a job (currently blocking)
+	my $id = enqueue $queue 'test';
+	dequeue $queue $id;
 
 	# To watch a queue (blocking)
 	while (my $job = watch $queue) {
@@ -295,6 +408,13 @@ it is released back into Pending state. Defaults to 60 seconds.
 
 L<MangoX::Queue> implements the following methods.
 
+=head2 dequeue
+
+	my $job = fetch $queue;
+	dequeue $queue $job;
+
+Dequeues a job. Currently removes it from the collection.
+
 =head2 enqueue
 
 	enqueue $queue 'job name';
@@ -329,12 +449,39 @@ Fetch a single job from the queue, returning undef if no jobs are available.
 
 Currently sets job status to 'Retrieved'.
 
+=head2 get
+
+	my $job = get $queue $id;
+
+Gets a job from the queue by ID. Doesn't change the job status.
+
 =head2 get_options
 
 	my $options = $queue->get_options;
 
 Returns the L<Mango::Collection> options hash used by find_and_modify to
 identify and update available queue items.
+
+=head2 monitor
+
+	# In blocking mode
+	my $id = enqueue $queue 'test';
+	monitor $queue $id, 'Complete'; # blocks until job is complete
+
+	# In non-blocking mode
+	my $id = enqueue $queue 'test';
+	monitor $queue $id, 'Complete' => sub {
+		# ...
+	};
+
+Wait for a job to enter a certain status.
+
+=head2 requeue
+
+	my $job = fetch $queue;
+	requeue $queue $job;
+
+Requeues a job. Sets the job status to 'Pending'.
 
 =head2 watch
 

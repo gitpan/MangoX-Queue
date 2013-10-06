@@ -13,7 +13,7 @@ has log => sub { Mojo::Log->new->level('error') };
 sub reset {
 	my ($self) = @_;
 	
-	$self->log->debug("Reset delay to " . $self->start);
+	$self->log->debug("Reset delay to " . $self->start . " seconds");
 
 	$self->current($self->start);
 }
@@ -22,23 +22,23 @@ sub wait {
 	my ($self, $callback) = @_;
 
 	my $delay = $self->current;
-	$self->log->debug("Current delay is " . $delay);
+	$self->log->debug("Current delay is $delay seconds");
 
 	my $incremented = $delay + $self->increment;
-	$self->log->debug("New delay is " . $incremented);
+	$self->log->debug("New delay is $incremented seconds");
 
 	if($incremented > $self->maximum) {
-		$self->log->debug("Limiting delay to maximum " . $self->maximum);
+		$self->log->debug("Limiting delay to maximum " . $self->maximum . " seconds");
 		$incremented = $self->maximum;
 	}
 
 	$self->current($incremented);
 
 	if($callback) {
-		$self->log->debug("Non-blocking delay for " . $delay);
+		$self->log->debug("Non-blocking delay for $delay seconds");
 		Mojo::IOLoop->timer($delay => $callback);
 	} else {
-		$self->log->debug("Sleeping for " . $delay);
+		$self->log->debug("Sleeping for $delay seconds");
 		sleep $delay;
 	}
 

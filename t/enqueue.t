@@ -52,7 +52,7 @@ $job = fetch $queue;
 is($job->{priority}, 2, 'Lower priority retrieved last');
 
 # To be notified when the job completes
-#enqueue $queue 'test' => sub {
+#enqueue $queue complete => sub {'test' => sub {
 #	# ...
 #};
 
