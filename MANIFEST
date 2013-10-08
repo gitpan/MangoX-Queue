@@ -1,10 +1,19 @@
 lib/MangoX/Queue.pm
 lib/MangoX/Queue/Delay.pm
+lib/MangoX/Queue/Plugin/Statsd.pm
+t/consume.t
+t/dequeue.t
 t/enqueue.t
-t/watch.t
+t/events.t
 t/fetch.t
-README.md
+t/plugin.t
+t/requeue.t
+t/retries.t
+t/statsd.t
+t/watch.t
+README.pod
 Makefile.PL
 MANIFEST
+Changes
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)

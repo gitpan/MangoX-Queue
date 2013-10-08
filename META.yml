@@ -17,6 +17,9 @@ no_index:
   directory:
     - t
     - inc
+    - t
 requires:
   Mango: 0.13
-version: 0.02
+resources:
+  repository: https://github.com/ian-kent/MangoX-Queue
+version: 0.03

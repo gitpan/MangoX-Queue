@@ -20,6 +20,8 @@ BEGIN
     if ($@);
 }
 
+my( $mm ) = $ExtUtils::MakeMaker::VERSION =~ /^([^_]+)/;
+
 WriteMakefile(
     'NAME'          => 'MangoX::Queue',
     'VERSION_FROM'  => 'lib/MangoX/Queue.pm',
@@ -32,7 +34,17 @@ WriteMakefile(
     'dist'          => { COMPRESS => "gzip -9", SUFFIX => "gz" },
 #   for ActivePerl:
        ($] >= 5.005 && $^O eq 'MSWin32' && $Config::Config{'archname'} =~ /-object\b/i ?
-               ('CAPI'         => 'TRUE') : ())
+               ('CAPI'         => 'TRUE') : ()),
+    ( $mm < 6.46
+        ? ()
+        : ( META_MERGE => {
+                resources => {
+                    repository => 'https://github.com/ian-kent/MangoX-Queue',
+                },
+                no_index => { directory => [ qw/t/ ] },
+            },
+        )
+    ),
 );
 
 __END__

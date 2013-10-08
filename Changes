@@ -1,0 +1,15 @@
+Revision history for Perl module MangoX::Queue
+
+0.03 2013-10-09
+ - Add event support (consumed, enqueued, dequeued)
+ - Add plugin support
+ - Make all methods support non-blocking operations
+ - Add Statsd plugin
+ - Renamed 'watch' to 'consume'
+ - Renamed 'monitor' to 'watch'
+ - Add queue release to stop non-blocking consumers
+
+0.02 2013-10-06
+
+0.01 2013-10-06
+ - first release to CPAN
