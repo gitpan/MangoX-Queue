@@ -17,18 +17,22 @@ my $queue = MangoX::Queue->new(collection => $collection);
 $queue->timeout(1);
 
 enqueue $queue 'test28451289';
-my $job = fetch $queue;
 
-isnt($job, undef, 'Got job from queue');
-is($job->{data}, 'test28451289', 'Got the right job');
+my $attempts = 0;
+while(++$attempts <= 5) {
+	sleep 2;
 
-$job = fetch $queue;
-is($job, undef, 'No job left in queue');
+	my $job = fetch $queue;
+	isnt($job, undef, 'Got job from queue');
+	is($job->{data}, 'test28451289', 'Got the right job');
+	is($job->{attempt}, $attempts, "Attempt is $attempts");
+
+	$job = fetch $queue;
+	is($job, undef, 'No job left in queue');
+}
 
 sleep 2;
+my $job = fetch $queue;
+is($job, undef, 'No job left in queue');
 
-$job = fetch $queue;
-isnt($job, undef, 'Got job from queue');
-is($job->{data}, 'test28451289', 'Got the right job');
-
-done_testing;
+done_testing(21);

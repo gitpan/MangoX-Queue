@@ -23,6 +23,9 @@ sub register {
 	on $queue dequeued => sub {
 		Net::Statsd::increment($self->queue->collection->name . '.dequeued');
 	};
+	on $queue error => sub {
+		Net::Statsd::increment($self->queue->collection->name . '.error');
+	};
 }
 
 1;

@@ -1,6 +1,7 @@
 lib/MangoX/Queue.pm
 lib/MangoX/Queue/Delay.pm
 lib/MangoX/Queue/Plugin/Statsd.pm
+lib/MangoX?Queue/Tutorial.pod
 t/consume.t
 t/dequeue.t
 t/enqueue.t
