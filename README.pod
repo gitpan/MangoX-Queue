@@ -3,21 +3,20 @@ package MangoX::Queue;
 use Mojo::Base 'Mojo::EventEmitter';
 
 use Carp 'croak';
-use DateTime;
-use DateTime::Duration;
 use Mojo::Log;
 use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
+use DateTime::Tiny;
 
-no warnings 'experimental::smartmatch';
-
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
 
 # The Mango::Collection representing the queue
 has 'collection';
+has 'capped';
+has 'stats';
 
 # A MangoX::Queue::Delay
 has 'delay' => sub { MangoX::Queue::Delay->new };
@@ -34,19 +33,17 @@ has 'consumers' => sub { {} };
 # Store plugins
 has 'plugins' => sub { {} };
 
-# Which status should be collected from the queue (can be scalar or array ref)
-has 'pending_status' => sub { 'Pending' };
-
-# The status which is set when a job is consumed from the queue
-has 'processing_status' => sub { 'Processing' };
-
-# The status to use when a job has failed
-has 'failed_status' => sub { 'Failed' };
-
 sub new {
     my $self = shift->SUPER::new(@_);
 
     croak qq{No Mango::Collection provided to constructor} unless ref($self->collection) eq 'Mango::Collection';
+
+    $self->stats($self->collection->stats);
+    $self->capped($self->stats->{capped});
+
+    $self->{pending_status} = $self->capped ? 1 : 'Pending';
+    $self->{processing_status} = $self->capped ? 2 : 'Processing';
+    $self->{failed_status} = $self->capped ? 3 : 'Failed';
 
     return $self;
 }
@@ -83,33 +80,32 @@ sub get_options {
         query => {
             '$or' => [{
                 status => {
-                    '$in' => ref($self->pending_status) eq 'ARRAY' ? $self->pending_status : [ $self->pending_status ],
+                    '$in' => ref($self->{pending_status}) eq 'ARRAY' ? $self->{pending_status} : [ $self->{pending_status} ],
                 },
                 '$or' => [ { processing => 0 }, { processing => undef } ],
             },{
-                status => $self->processing_status,
+                status => $self->{processing_status},
                 processing => {
-                    '$lt' => DateTime->now->subtract_duration(DateTime::Duration->new(seconds => $self->timeout))
+                    '$lt' => time - $self->timeout,
                 }
             }],
             attempt => {
                 '$lte' => $self->retries + 1,
             },
         },
-        update => {
-            '$set' => {
-                processing => DateTime->now,
-                status => $self->processing_status,
-            },
-            '$inc' => {
-                attempt => 1,
-            }
-        },
         sort => bson_doc( # Sort by priority, then in order of creation
             'priority' => 1,
             'created' => -1,
         ),
-        new => 0, # Get the original object (so we can see status etc)
+        update => {
+            '$set' => {
+                processing => time,
+                status => $self->{processing_status},
+            },
+            '$inc' => {
+                attempt => 1,
+            }
+        }
     };
 }
 
@@ -129,10 +125,11 @@ sub enqueue {
 
     my $db_job = {
         priority => $args{priority} // 1,
-        created => $args{created} // DateTime->now,
+        created => $args{created} // DateTime::Tiny->now,
         data => $job,
-        status => $args{status} // 'Pending',
+        status => $args{status} // $self->{pending_status},
         attempt => 1,
+        processing => 0,
     };
 
     if($callback) {
@@ -187,7 +184,7 @@ sub _watch_blocking {
         my $doc = $self->collection->find_one({'_id' => $id});
         $self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
 
-        if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && $doc->{status} ~~ @$status))) {
+        if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && grep { $_ =~ $doc->{status} } @$status))) {
             return 1;
         } else {
             $self->delay->wait;
@@ -202,7 +199,7 @@ sub _watch_nonblocking {
         my ($cursor, $err, $doc) = @_;
         $self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
         
-        if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && $doc->{status} ~~ @$status))) {
+        if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && grep { $_ =~ $doc->{status} } @$status))) {
             $self->log->debug("Status is $status");
             $self->delay->reset;
             $callback->($doc);
@@ -220,7 +217,7 @@ sub _watch_nonblocking {
 sub requeue {
     my ($self, $job, $callback) = @_;
 
-    $job->{status} = ref($self->pending_status) eq 'ARRAY' ? $self->pending_status->[0] : $self->pending_status;
+    $job->{status} = ref($self->{pending_status}) eq 'ARRAY' ? $self->{pending_status}->[0] : $self->{pending_status};
     return $self->update($job, $callback);
 }
 
@@ -263,10 +260,14 @@ sub update {
     if($callback) {
         return $self->collection->find_one({'_id' => $job->{_id}} => sub {
             my ($collection, $error, $doc) = @_;
+            if($error) {
+                $self->emit_safe(error => $error);
+                return;
+            }
             $callback->($doc);
         });
     } else {
-        return $self->collection->update({'_id' => $job->{_id}}, $job, {upsert => 1});
+        return $self->collection->update({'_id' => $job->{_id}}, $job, {upsert => 1}) or croak qq{Error updating collection: $@};
     }
 }
 
@@ -323,7 +324,7 @@ sub release {
     Mojo::IOLoop->remove($self->consumers->{$consumer_id});
     delete $self->consumers->{$consumer_id};
 
-    return;
+    return 1;
 }
 
 sub _consume_blocking {
@@ -337,7 +338,7 @@ sub _consume_blocking {
         $self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
 
         if($doc && $doc->{attempt} > $self->retries) {
-            $doc->{status} = $self->failed_status;
+            $doc->{status} = $self->{failed_status};
             $self->update($doc);
             $doc = undef;
             $self->log->debug("Job exceeded retries, status set to failed and job abandoned");
@@ -362,9 +363,14 @@ sub _consume_nonblocking {
     $self->collection->find_and_modify($opts => sub {
         my ($cursor, $err, $doc) = @_;
         $self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
+
+        if($err) {
+            $self->log->error($err);
+            $self->emit_safe(error => $err);
+        }
         
         if($doc && $doc->{attempt} > $self->retries) {
-            $doc->{status} = $self->failed_status;
+            $doc->{status} = $self->{failed_status};
             $self->update($doc);
             $doc = undef;
             $self->log->debug("Job exceeded retries, status set to failed and job abandoned");
@@ -380,14 +386,16 @@ sub _consume_nonblocking {
             return unless Mojo::IOLoop->is_running;
             return if $fetch;
             return unless exists $self->consumers->{$consumer_id};
-            $self->consumers->{$consumer_id} = Mojo::IOLoop->timer(0 => sub { $self->_consume_nonblocking($args, $consumer_id, $callback, 0) });
+            #$self->consumers->{$consumer_id} = Mojo::IOLoop->timer(0 => sub { $self->_consume_nonblocking($args, $consumer_id, $callback, 0) });
+            $self->_consume_nonblocking($args, $consumer_id, $callback, 0);
             $self->log->debug("Timer rescheduled (recursive immediate), consumer_id $consumer_id has timer ID: " . $self->consumers->{$consumer_id});
         } else {
             return unless Mojo::IOLoop->is_running;
             return if $fetch;
             $self->delay->wait(sub {
                 return unless exists $self->consumers->{$consumer_id};
-                $self->consumers->{$consumer_id} = Mojo::IOLoop->timer(0 => sub { $self->_consume_nonblocking($args, $consumer_id, $callback, 0) });
+                #$self->consumers->{$consumer_id} = Mojo::IOLoop->timer(0 => sub { $self->_consume_nonblocking($args, $consumer_id, $callback, 0) });
+                $self->_consume_nonblocking($args, $consumer_id, $callback, 0);
                 $self->log->debug("Timer rescheduled (recursive delayed), consumer_id $consumer_id has timer ID: " . $self->consumers->{$consumer_id});
             });
             return undef;
@@ -426,7 +434,7 @@ Non-blocking mode requires a running L<Mojo::IOLoop>.
     enqueue $queue 'test' => sub { my $id = shift; };
 
     # To set options
-    enqueue $queue priority => 1, created => DateTime->now, 'test' => sub { my $id = shift; };
+    enqueue $queue priority => 1, created => DateTime::Tiny->now, 'test' => sub { my $id = shift; };
 
     # To watch for a specific job status
     watch $queue $id, 'Complete' => sub {
@@ -468,7 +476,7 @@ Non-blocking mode requires a running L<Mojo::IOLoop>.
     my $id = enqueue $queue 'test';
 
     # To set options
-    my $id = enqueue $queue priority => 1, created => DateTime->now, 'test';
+    my $id = enqueue $queue priority => 1, created => DateTime::Tiny->now, 'test';
 
     # To watch for a specific job status
     watch $queue $id;
@@ -523,36 +531,11 @@ The L<Mango::Collection> representing the MongoDB queue collection.
 The L<MangoX::Queue::Delay> responsible for dynamically controlling the
 delay between queue queries.
 
-=head2 failed_status
-
-    my $status = $queue->failed_status;
-
-    $queue->failed_status('Failed');
-    
-The status to set failed jobs to (when exceeding retries).
-
-=head2 pending_status
-
-    my $status = $queue->pending_status;
-
-    $queue->pending_status('Pending');
-    $queue->pending_status(['Pending', 'Queued']);
-
-The pending status used to find new jobs on the queue.
-
 =head2 plugins
 
     my $plugins = $queue->plugins;
 
 Returns a hash containing the plugins registered with this queue.
-
-=head2 processing_status
-
-    my $status = $queue->processing_status;
-
-    $queue->processing_status('Processing');
-    
-The status to set jobs to when consumed from the queue.
 
 =head2 retries
 
@@ -643,7 +626,7 @@ You can set queue options including priority, created and status.
 
     my $id = enqueue $queue,  
         priority => 1,
-        created => DateTime->now,
+        created => time,
         status => 'Pending',
         +{
             foo => 'bar'

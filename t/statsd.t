@@ -15,7 +15,8 @@ SKIP: {
 
 	my $mango = Mango->new('mongodb://localhost:27017');
 	my $collection = $mango->db('test')->collection('mangox_queue_test');
-	$collection->remove;
+	eval { $collection->drop };
+	$collection->create;
 
 	my $queue = MangoX::Queue->new(collection => $collection);
 

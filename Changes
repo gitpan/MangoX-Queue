@@ -1,5 +1,10 @@
 Revision history for Perl module MangoX::Queue
 
+0.05 2013-10-14
+ - Switch to DateTime::Tiny for performance
+ - Replace attributes with hash keys for performance
+ - Fixed support for capped collections
+
 0.04 2013-10-12
  - Add retries/attempts support
  - Add attributes for pending, processing and failed status

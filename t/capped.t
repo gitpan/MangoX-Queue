@@ -4,14 +4,15 @@ use strict;
 use warnings;
 
 use Mango;
+use Mango::BSON ':bson';
 use MangoX::Queue;
 
 use Test::More;
 
 my $mango = Mango->new('mongodb://localhost:27017');
-my $collection = $mango->db('test')->collection('mangox_queue_test');
+my $collection = $mango->db('test')->collection('mangox_queue_test_capped');
 eval { $collection->drop };
-$collection->create;
+$collection->create({capped => bson_true, max => 5, size => 256000});
 
 my $queue = MangoX::Queue->new(collection => $collection);
 
@@ -59,7 +60,8 @@ sub test_blocking_consume {
 }
 
 sub test_custom_consume {
-	$collection->remove;
+	eval { $collection->drop };
+	$collection->create;
 
 	my $id = enqueue $queue 'custom consume test';
 

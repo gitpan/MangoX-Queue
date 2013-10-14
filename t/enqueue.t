@@ -10,7 +10,8 @@ use Test::More;
 
 my $mango = Mango->new('mongodb://localhost:27017');
 my $collection = $mango->db('test')->collection('mangox_queue_test');
-$collection->remove;
+eval { $collection->drop };
+$collection->create;
 
 my $queue = MangoX::Queue->new(collection => $collection);
 
@@ -50,10 +51,5 @@ is($job->{priority}, 1, 'Higher priority retrieved first');
 $job = fetch $queue;
 
 is($job->{priority}, 2, 'Lower priority retrieved last');
-
-# To be notified when the job completes
-#enqueue $queue complete => sub {'test' => sub {
-#	# ...
-#};
 
 done_testing;
