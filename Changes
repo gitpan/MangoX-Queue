@@ -1,5 +1,8 @@
 Revision history for Perl module MangoX::Queue
 
+0.06 2013-04-11
+ - Fix dodgy file in distribution
+
 0.05 2013-10-14
  - Switch to DateTime::Tiny for performance
  - Replace attributes with hash keys for performance

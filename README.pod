@@ -8,7 +8,7 @@ use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 use DateTime::Tiny;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
