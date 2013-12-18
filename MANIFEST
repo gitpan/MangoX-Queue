@@ -13,6 +13,7 @@ t/requeue.t
 t/retries.t
 t/statsd.t
 t/watch.t
+t/update.t
 README.pod
 Makefile.PL
 MANIFEST

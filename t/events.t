@@ -8,7 +8,7 @@ use MangoX::Queue;
 
 use Test::More;
 
-my $mango = Mango->new('mongodb://localhost:27017');
+my $mango = Mango->new($ENV{MANGO_URI} // 'mongodb://localhost:27017');
 my $collection = $mango->db('test')->collection('mangox_queue_test');
 eval { $collection->drop };
 $collection->create;

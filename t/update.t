@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use Mango;
+use Mojo::IOLoop;
 use MangoX::Queue;
 
 use Test::More;
@@ -19,15 +20,17 @@ my $id = enqueue $queue 'test';
 my $job = fetch $queue;
 
 isnt($job, undef, 'Got job from queue');
+is($job->{priority}, 1, 'Priority is right');
+is($job->{status}, 'Pending', 'Status is right');
+is($job->{data}, 'test', 'Data is right');
 
-$job = fetch $queue;
-is($job, undef, 'No job left in queue');
+$job->{data} = 'update test';
 
-$job = get $queue $id;
-isnt($job, undef, 'Got job from queue by id');
-
-dequeue $queue $id;
-$job = get $queue $id;
-is($job, undef, 'Job not found in queue by id');
+update $queue $job => sub {
+    Mojo::IOLoop->stop;
+    my $j = get $queue $id;
+    is $j->{data}, 'update test', 'job was updated in non-blocking mode';
+};
+Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
 
 done_testing;

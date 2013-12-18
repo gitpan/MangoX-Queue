@@ -8,7 +8,7 @@ use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 use DateTime::Tiny;
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -258,7 +258,7 @@ sub update {
     my ($self, $job, $callback) = @_;
 
     if($callback) {
-        return $self->collection->find_one({'_id' => $job->{_id}} => sub {
+        return $self->collection->update({'_id' => $job->{_id}}, $job => sub {
             my ($collection, $error, $doc) = @_;
             if($error) {
                 $self->emit_safe(error => $error);
