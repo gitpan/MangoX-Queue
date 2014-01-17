@@ -1,5 +1,9 @@
 Revision history for Perl module MangoX::Queue
 
+0.08 2014-01-08
+ - Document error handling
+ - Add error to non-blocking callbacks
+
 0.07 2013-12-18
  - Fix non-blocking update
 

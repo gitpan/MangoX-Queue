@@ -8,7 +8,7 @@ use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 use DateTime::Tiny;
 
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -136,15 +136,16 @@ sub enqueue {
         return $self->collection->insert($db_job => sub {
             my ($collection, $error, $oid) = @_;
             if($error) {
-                $self->emit_safe(error => qq{Error inserting job into collection: $error});
+                $self->emit_safe(error => qq{Error inserting job into collection: $error}, $db_job, $error);
+                $callback->($db_job, $error);
                 return;
             }
             $db_job->{_id} = $oid;
             $self->emit_safe(enqueued => $db_job) if $self->has_subscribers('enqueued');
             eval {
-                $callback->($db_job);
+                $callback->($db_job, undef);
                 return 1;
-            } or $self->emit_safe(error => qq{Error in callback: $@});
+            } or $self->emit_safe(error => qq{Error in callback: $@}, $db_job, $@);
         });
     } else {
         eval {
@@ -202,7 +203,7 @@ sub _watch_nonblocking {
         if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && grep { $_ =~ $doc->{status} } @$status))) {
             $self->log->debug("Status is $status");
             $self->delay->reset;
-            $callback->($doc);
+            $callback->($doc, undef);
         } else {
             $self->log->debug("Job not found or status doesn't match");
             $self->delay->wait(sub {
@@ -230,7 +231,15 @@ sub dequeue {
 
     if($callback) {
         $self->collection->remove({'_id' => $id} => sub {
-            $callback->();
+            my ($collection, $error, $doc) = @_;
+
+            if($error) {
+                $self->emit_safe(error => qq(Error removing job from collection: $error), $id_or_job, $error) if $self->has_subscribers('error');
+                $callback->($id_or_job, $error);
+                return;
+            }
+
+            $callback->($id_or_job, undef);
             $self->emit_safe(dequeued => $id_or_job) if $self->has_subscribers('dequeued');
         });
     } else {
@@ -247,7 +256,12 @@ sub get {
     if($callback) {
         return $self->collection->find_one({'_id' => $id} => sub {
             my ($collection, $error, $doc) = @_;
-            $callback->($doc);
+
+            if($error) {
+                $self->emit_safe(error => qq(Error retrieving job: $error), $id_or_job, $error) if $self->has_subscribers('error');
+            }
+
+            $callback->($doc, $error);
         });
     } else {
         return $self->collection->find_one({'_id' => $id});
@@ -261,10 +275,9 @@ sub update {
         return $self->collection->update({'_id' => $job->{_id}}, $job => sub {
             my ($collection, $error, $doc) = @_;
             if($error) {
-                $self->emit_safe(error => $error);
-                return;
+                $self->emit_safe(error => qq(Error updating job: $error), $job, $error) if $self->has_subscribers('error');
             }
-            $callback->($doc);
+            $callback->($doc, $error);
         });
     } else {
         return $self->collection->update({'_id' => $job->{_id}}, $job, {upsert => 1}) or croak qq{Error updating collection: $@};
@@ -722,6 +735,28 @@ Wait for a job to enter a certain status.
     watch $queue $id, 'Complete' => sub {
         # ...
     };
+
+=head1 ERRORS
+
+Errors are reported by MangoX::Queue using callbacks and L<Mojo::EventEmitter>
+
+To listen for all errors on a queue, subscribe to the 'error' event:
+
+    $queue->on(error => sub {
+        my ($queue, $job, $error) = @_;
+        # ...
+    });
+
+To check for errors against an individual update, enqueue or dequeue call,
+you can check for an error argument to the callback sub:
+
+    enqueue $queue +$job => sub {
+        my ($job, $error) = @_;
+
+        if($error) {
+            # ...
+        }
+    }
 
 =head1 SEE ALSO
 
