@@ -1,5 +1,8 @@
 Revision history for Perl module MangoX::Queue
 
+0.09 2014-01-22
+ - Add delay_until attribute to queue jobs
+
 0.08 2014-01-08
  - Document error handling
  - Add error to non-blocking callbacks

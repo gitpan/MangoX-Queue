@@ -8,7 +8,7 @@ use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 use DateTime::Tiny;
 
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -78,20 +78,24 @@ sub get_options {
 
     return {
         query => {
-            '$or' => [{
-                status => {
-                    '$in' => ref($self->{pending_status}) eq 'ARRAY' ? $self->{pending_status} : [ $self->{pending_status} ],
-                },
-                '$or' => [ { processing => 0 }, { processing => undef } ],
+            '$and' => [{
+                '$or' => [ { delay_until => undef }, { delay_until => { '$lt' => time } } ],
             },{
-                status => $self->{processing_status},
-                processing => {
-                    '$lt' => time - $self->timeout,
-                }
-            }],
-            attempt => {
-                '$lte' => $self->retries + 1,
-            },
+                '$or' => [{
+                    status => {
+                        '$in' => ref($self->{pending_status}) eq 'ARRAY' ? $self->{pending_status} : [ $self->{pending_status} ],
+                    },
+                    '$or' => [ { processing => 0 }, { processing => undef } ],
+                },{
+                    status => $self->{processing_status},
+                    processing => {
+                        '$lt' => time - $self->timeout,
+                    }
+                }],
+                attempt => {
+                    '$lte' => $self->retries + 1,
+                },
+            }]
         },
         sort => bson_doc( # Sort by priority, then in order of creation
             'priority' => 1,
@@ -131,6 +135,8 @@ sub enqueue {
         attempt => 1,
         processing => 0,
     };
+
+    $db_job->{delay_until} = $args{delay_until} if $args{delay_until};
 
     if($callback) {
         return $self->collection->insert($db_job => sub {
@@ -735,6 +741,12 @@ Wait for a job to enter a certain status.
     watch $queue $id, 'Complete' => sub {
         # ...
     };
+
+=head1 FUTURE JOBS
+
+Jobs can be queued in advance by setting a delay_until attribute:
+
+    enqueue $queue delay_until => (time + 20), "job name";
 
 =head1 ERRORS
 
