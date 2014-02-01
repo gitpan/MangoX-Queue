@@ -6,9 +6,10 @@ use Carp 'croak';
 use Mojo::Log;
 use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
+use MangoX::Queue::Job;
 use DateTime::Tiny;
 
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -26,6 +27,12 @@ has 'timeout' => sub { $ENV{MANGOX_QUEUE_JOB_TIMEOUT} // 60 };
 
 # How many times to retry a job before giving up
 has 'retries' => sub { $ENV{MANGOX_QUEUE_JOB_RETRIES} // 5 };
+
+# Current number of jobs that have been consumed but not yet completed
+has 'job_count' => 0;
+
+# Maximum number of jobs allowed to be in a consumed state at any one time
+has 'concurrent_job_limit' => 10;
 
 # Store Mojo::IOLoop->timer IDs
 has 'consumers' => sub { {} };
@@ -376,6 +383,26 @@ sub _consume_blocking {
 sub _consume_nonblocking {
     my ($self, $args, $consumer_id, $callback, $fetch) = @_;
 
+    $self->log->debug("Active jobs: " . $self->job_count . '/' . ($self->concurrent_job_limit < 0 ? '*' : $self->concurrent_job_limit));
+
+    # Don't allow consumption if job_count has been reached
+    if ($self->concurrent_job_limit > -1 && $self->job_count >= $self->concurrent_job_limit) {
+        return unless Mojo::IOLoop->is_running;
+        return if $fetch;
+        $self->emit_safe(concurrent_job_limit_reached => $self->concurrent_job_limit) if $self->has_subscribers('concurrent_job_limit_reached');
+        $self->log->debug("concurrent_job_limit_reached = " . $self->concurrent_job_limit . ", job_count = " . $self->job_count);
+        return unless exists $self->consumers->{$consumer_id};
+
+        $self->delay->wait(sub {
+            return unless exists $self->consumers->{$consumer_id};
+            $self->_consume_nonblocking($args, $consumer_id, $callback, 0);
+        });
+
+        $self->log->debug("Timer rescheduled (job_count limit reached), consumer_id $consumer_id has timer ID: " . $self->consumers->{$consumer_id});
+
+        return;
+    }
+
     my $opts = $self->get_options;
     $opts->{query} = $args if scalar keys %$args;
 
@@ -396,27 +423,34 @@ sub _consume_nonblocking {
         }
 
         if($doc) {
+            $self->job_count($self->job_count + 1);
+            $self->log->debug("job_count incremented to " . $self->job_count);
+
+            my $job = MangoX::Queue::Job->new($doc);
+            $job->queue($self);
+
             $self->delay->reset;
-            $self->emit_safe(consumed => $doc) if $self->has_subscribers('consumed');
+            $self->emit_safe(consumed => $job) if $self->has_subscribers('consumed');
+
             eval {
-                $callback->($doc);
+                $callback->($job);
                 return 1;
             } or $self->emit_safe(error => "Error in callback: $@");
             return unless Mojo::IOLoop->is_running;
             return if $fetch;
             return unless exists $self->consumers->{$consumer_id};
-            #$self->consumers->{$consumer_id} = Mojo::IOLoop->timer(0 => sub { $self->_consume_nonblocking($args, $consumer_id, $callback, 0) });
-            $self->_consume_nonblocking($args, $consumer_id, $callback, 0);
+            Mojo::IOLoop->timer(0, sub { 
+                $self->_consume_nonblocking($args, $consumer_id, $callback, 0) }
+            );
             $self->log->debug("Timer rescheduled (recursive immediate), consumer_id $consumer_id has timer ID: " . $self->consumers->{$consumer_id});
         } else {
             return unless Mojo::IOLoop->is_running;
             return if $fetch;
             $self->delay->wait(sub {
                 return unless exists $self->consumers->{$consumer_id};
-                #$self->consumers->{$consumer_id} = Mojo::IOLoop->timer(0 => sub { $self->_consume_nonblocking($args, $consumer_id, $callback, 0) });
                 $self->_consume_nonblocking($args, $consumer_id, $callback, 0);
-                $self->log->debug("Timer rescheduled (recursive delayed), consumer_id $consumer_id has timer ID: " . $self->consumers->{$consumer_id});
             });
+            $self->log->debug("Timer rescheduled (recursive delayed), consumer_id $consumer_id has timer ID: " . $self->consumers->{$consumer_id});
             return undef;
         }
     });
@@ -550,6 +584,21 @@ The L<Mango::Collection> representing the MongoDB queue collection.
 The L<MangoX::Queue::Delay> responsible for dynamically controlling the
 delay between queue queries.
 
+=head2 concurrent_job_limit
+
+    my $concurrent_job_limit = $queue->concurrent_job_limit;
+    $queue->concurrent_job_limit(20);
+
+The maximum number of concurrent jobs (jobs consumed from the queue and unfinished). Defaults to 10.
+
+This only applies to jobs on the queue in non-blocking mode. L<MangoX::Queue> has an internal counter
+that is incremented when a job has been consumed from the queue (in non-blocking mode). The job
+returned is a L<MangoX::Queue::Job> instance and has a descructor method that is called to decrement
+the internal counter. See L<MangoX::Queue::Job> for more details.
+
+Set to -1 to disable queue concurrency limits. B<Use with caution>, this could result in
+out of memory errors or an extremely slow event loop.
+
 =head2 plugins
 
     my $plugins = $queue->plugins;
@@ -605,6 +654,15 @@ Emitted when an item is dequeued
 
 Emitted when an item is enqueued
 
+=head2 concurrent_job_limit_reached
+
+    on $queue enqueued => sub {
+        my ($queue, $concurrent_job_limit) = @_;
+        # ...
+    };
+
+Emitted when a job is found but the </concurrent_job_limit> limit has been reached.
+
 =head1 METHODS
 
 L<MangoX::Queue> implements the following methods.
@@ -622,7 +680,8 @@ L<MangoX::Queue> implements the following methods.
         # ...
     };
 
-Waits for jobs to arrive on the queue, sleeping between queue checks using L<MangoX::Queue::Delay> or L<Mojo::IOLoop>.
+Waits for jobs to arrive on the queue, sleeping between queue checks using
+L<MangoX::Queue::Delay> or L<Mojo::IOLoop>.
 
 Currently sets the status to 'Retrieved' before returning the job.
 
@@ -769,6 +828,14 @@ you can check for an error argument to the callback sub:
             # ...
         }
     }
+
+=head1 CONTRIBUTORS
+
+=over
+
+=item Ben Vinnerd, ben@vinnerd.com
+
+=back
 
 =head1 SEE ALSO
 

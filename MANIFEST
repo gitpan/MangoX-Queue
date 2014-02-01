@@ -1,5 +1,6 @@
 lib/MangoX/Queue.pm
 lib/MangoX/Queue/Delay.pm
+lib/MangoX/Queue/Job.pm
 lib/MangoX/Queue/Plugin/Statsd.pm
 lib/MangoX/Queue/Tutorial.pod
 t/capped.t
