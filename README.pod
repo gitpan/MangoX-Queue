@@ -9,7 +9,7 @@ use MangoX::Queue::Delay;
 use MangoX::Queue::Job;
 use DateTime::Tiny;
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -283,6 +283,13 @@ sub get {
 
 sub update {
     my ($self, $job, $callback) = @_;
+
+    # FIXME Temporary fix to remove queue item from MangoX::Queue::Job
+    my $j = {};
+    for my $key (keys %$job) {
+        $j->{$key} = $job->{$key} if $key ne 'queue';
+    }
+    $job = $j;
 
     if($callback) {
         return $self->collection->update({'_id' => $job->{_id}}, $job => sub {

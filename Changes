@@ -1,5 +1,8 @@
 Revision history for Perl module MangoX::Queue
 
+0.11 2014-05-14
+ - Fix bug introduced by Mango/MongoDB 2.6 update
+
 0.10 2014-01-30
  - Add concurrent_job_limit (thanks to https://github.com/bvinnerd)
 
