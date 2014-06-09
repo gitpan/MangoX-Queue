@@ -1,5 +1,13 @@
 Revision history for Perl module MangoX::Queue
 
+0.12 2014-06-06
+ - A more efficient options hash - optimise out $or operators
+ - delay_until queue key is now required (Warning: be sure to add this to
+   existing queue items).
+ - Add failed_status, pending_status & processing_status attributes rather
+   than directly modifying the object hash. Pre-generate the status array,
+   rather than on the fly when get_options is called.
+
 0.11 2014-05-14
  - Fix bug introduced by Mango/MongoDB 2.6 update
 

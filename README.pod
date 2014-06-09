@@ -9,7 +9,7 @@ use MangoX::Queue::Delay;
 use MangoX::Queue::Job;
 use DateTime::Tiny;
 
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -48,9 +48,9 @@ sub new {
     $self->stats($self->collection->stats);
     $self->capped($self->stats->{capped});
 
-    $self->{pending_status} = $self->capped ? 1 : 'Pending';
-    $self->{processing_status} = $self->capped ? 2 : 'Processing';
-    $self->{failed_status} = $self->capped ? 3 : 'Failed';
+    $self->pending_status($self->capped ? 1 : 'Pending');
+    $self->processing_status($self->capped ? 2 : 'Processing');
+    $self->failed_status($self->capped ? 3 : 'Failed');
 
     return $self;
 }
@@ -80,29 +80,55 @@ sub plugin {
     return $self->plugins->{$name};
 }
 
+sub pending_status {
+    my ($self, $new_status) = @_;
+
+    return $self->{_pending_status} unless defined $new_status;
+
+    $self->{_pending_status} = $new_status;
+    $self->_combine_pending_and_processing_status();
+}
+sub processing_status {
+    my ($self, $new_status) = @_;
+
+    return $self->{_processing_status} unless defined $new_status;
+
+    $self->{_processing_status} = $new_status;
+    $self->_combine_pending_and_processing_status();
+}
+sub failed_status {
+    my ($self, $new_status) = @_;
+
+    return $self->{_failed_status} unless defined $new_status;
+    $self->{_failed_status} = $new_status;
+}
+
+sub _combine_pending_and_processing_status {
+    my ($self) = @_;
+
+    $self->{pending_and_processing_status} = [
+        ref($self->{_pending_status}) eq 'ARRAY' ? @{$self->{_pending_status}} : $self->{_pending_status},
+        $self->{_processing_status},
+    ];
+}
+
 sub get_options {
     my ($self) = @_;
 
     return {
         query => {
-            '$and' => [{
-                '$or' => [ { delay_until => undef }, { delay_until => { '$lt' => time } } ],
-            },{
-                '$or' => [{
-                    status => {
-                        '$in' => ref($self->{pending_status}) eq 'ARRAY' ? $self->{pending_status} : [ $self->{pending_status} ],
-                    },
-                    '$or' => [ { processing => 0 }, { processing => undef } ],
-                },{
-                    status => $self->{processing_status},
-                    processing => {
-                        '$lt' => time - $self->timeout,
-                    }
-                }],
-                attempt => {
-                    '$lte' => $self->retries + 1,
-                },
-            }]
+            status => {
+                '$in' => $self->{pending_and_processing_status},
+            },
+            processing => {
+                '$lt' => time - $self->timeout,
+            },
+            attempt => {
+                '$lte' => $self->retries + 1,
+            },
+            delay_until => {
+                '$lt' => time,
+            }
         },
         sort => bson_doc( # Sort by priority, then in order of creation
             'priority' => 1,
@@ -111,7 +137,7 @@ sub get_options {
         update => {
             '$set' => {
                 processing => time,
-                status => $self->{processing_status},
+                status => $self->{_processing_status},
             },
             '$inc' => {
                 attempt => 1,
@@ -138,9 +164,10 @@ sub enqueue {
         priority => $args{priority} // 1,
         created => $args{created} // DateTime::Tiny->now,
         data => $job,
-        status => $args{status} // $self->{pending_status},
+        status => $args{status} // $self->{_pending_status},
         attempt => 1,
         processing => 0,
+        delay_until => 0,
     };
 
     $db_job->{delay_until} = $args{delay_until} if $args{delay_until};
@@ -231,7 +258,7 @@ sub _watch_nonblocking {
 sub requeue {
     my ($self, $job, $callback) = @_;
 
-    $job->{status} = ref($self->{pending_status}) eq 'ARRAY' ? $self->{pending_status}->[0] : $self->{pending_status};
+    $job->{status} = ref($self->{_pending_status}) eq 'ARRAY' ? $self->{_pending_status}->[0] : $self->{_pending_status};
     return $self->update($job, $callback);
 }
 
@@ -371,7 +398,7 @@ sub _consume_blocking {
         $self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
 
         if($doc && $doc->{attempt} > $self->retries) {
-            $doc->{status} = $self->{failed_status};
+            $doc->{status} = $self->{_failed_status};
             $self->update($doc);
             $doc = undef;
             $self->log->debug("Job exceeded retries, status set to failed and job abandoned");
@@ -423,7 +450,7 @@ sub _consume_nonblocking {
         }
         
         if($doc && $doc->{attempt} > $self->retries) {
-            $doc->{status} = $self->{failed_status};
+            $doc->{status} = $self->{_failed_status};
             $self->update($doc);
             $doc = undef;
             $self->log->debug("Job exceeded retries, status set to failed and job abandoned");
@@ -606,11 +633,30 @@ the internal counter. See L<MangoX::Queue::Job> for more details.
 Set to -1 to disable queue concurrency limits. B<Use with caution>, this could result in
 out of memory errors or an extremely slow event loop.
 
+=head2 failed_status
+
+    $self->failed_status('Failed');
+
+Set a custom failed status.
+
+=head2 pending_status
+
+    $self->pending_status('Pending');
+    $self->pending_status(['Pending', 'pending']);
+
+Set a custom pending status, can be an array ref.
+
 =head2 plugins
 
     my $plugins = $queue->plugins;
 
 Returns a hash containing the plugins registered with this queue.
+
+=head2 processing_status
+
+    $self->processing_status('Processing');
+
+Set a custom processing status.
 
 =head2 retries
 
