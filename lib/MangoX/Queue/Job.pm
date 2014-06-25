@@ -1,20 +1,21 @@
 package MangoX::Queue::Job;
 
-use Mojo::Base -base;
+use Mojo::Base 'Mojo::EventEmitter';
 
-has 'queue' => sub { die('queue not defined') };
+has 'has_finished' => sub { 0 };
 
-sub DESTROY
-{
-    my $self = shift;
+sub DESTROY {
+    my ($self) = @_;
+    
+    $self->finished;
+}
 
-    $self->queue->log->debug('Job completed and object destroyed');
+sub finished {
+    my ($self) = @_;
 
-    $self->queue->job_count($self->queue->job_count - 1);
-
-    $self->queue->log->debug('New job count: ' . $self->queue->job_count);
-
-    return;
+    return if $self->has_finished;
+    $self->has_finished(1);
+    $self->emit_safe("finished");
 }
 
 1;
@@ -40,18 +41,17 @@ This class is used internally by L<MangoX::Queue>
     my $doc = {...};
 
     my $job = new MangoX::Queue::Job($doc);
-    $job->queue($self);
-    undef($job); # or let $job fall out of scope/refcount to 0
 
 =head1 ATTRIBUTES
 
 L<MangoX::Queue::Job> implements the following attributes:
 
-=head2 queue
+=head2 has_finished
 
-    $job->queue($queue);
+    my $finished = $job->has_finished;
+    $job->has_finished(1);
 
-Holds the L<MangoX::Queue> instance that L<MangoX::Queue::Job> belongs to. It must be set when the job is created.
+Is set to C<1> when the job has finished, either through the C<DESTROY> or C<finished> methods.
 
 =head1 METHODS
 
@@ -60,6 +60,12 @@ L<MangoX::Queue::Job> implements the following methods:
 =head2 DESTROY
 
 Called automatically when C<$job> goes out of scope, undef'd, or refcount goes to 0.
+
+Calls C<finished>, emitting a C<finished> event if it hasn't already been emitted.
+
+=head2 finished
+
+Emits a C<finished> event if it hasn't already been emitted.
 
 =head1 SEE ALSO
 
