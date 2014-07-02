@@ -1,9 +1,13 @@
 Revision history for Perl module MangoX::Queue
 
+0.14 2014-07-02
+ - Remove 'events' from job data written to MongoDB
+
 0.13 2014-06-25
  - Remove circular dependency from MangoX::Queue::Job
  - Add finished method to MangoX::Queue::Job
  - Use events to communicate with the queue
+ - Use bson_time for created value
 
 0.12 2014-06-06
  - A more efficient options hash - optimise out $or operators

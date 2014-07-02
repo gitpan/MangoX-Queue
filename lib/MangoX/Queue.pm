@@ -8,7 +8,7 @@ use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 use MangoX::Queue::Job;
 
-our $VERSION = '0.13';
+our $VERSION = '0.14';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -321,7 +321,7 @@ sub update {
     my ($self, $job, $callback) = @_;
 
     # FIXME Temporary fix to remove has_finished indicator from MangoX::Queue::Job
-    $job = { map { $_ => $job->{$_} } grep { $_ ne 'has_finished' } keys %$job };
+    $job = { map { $_ => $job->{$_} } grep { $_ !~ /^(?:has_finished|events)$/ } keys %$job };
 
     if($callback) {
         return $self->collection->update({'_id' => $job->{_id}}, $job => sub {

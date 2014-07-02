@@ -2,7 +2,7 @@
 
 ###############################################################################
 ##                                                                           ##
-##    Copyright (c) 2013 Ian Kent                                            ##
+##    Copyright (c) 2014 Ian Kent                                            ##
 ##    All rights reserved.                                                   ##
 ##                                                                           ##
 ##    This package is free software; you can redistribute it                 ##
@@ -29,7 +29,7 @@ WriteMakefile(
     'LICENSE'       => 'perl',
     'AUTHOR'        => 'Ian Kent <iankent@cpan.org>',
     'PREREQ_PM'     => {
-                           'Mango' => '0.13'
+                           'Mango' => '0.43'
                        },
     'dist'          => { COMPRESS => "gzip -9", SUFFIX => "gz" },
 #   for ActivePerl:
