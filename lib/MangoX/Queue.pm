@@ -8,7 +8,7 @@ use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 use MangoX::Queue::Job;
 
-our $VERSION = '0.14';
+our $VERSION = '0.15';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -26,6 +26,9 @@ has 'timeout' => sub { $ENV{MANGOX_QUEUE_JOB_TIMEOUT} // 60 };
 
 # How many times to retry a job before giving up
 has 'retries' => sub { $ENV{MANGOX_QUEUE_JOB_RETRIES} // 5 };
+
+# Prevent binary object IDs escaping MangoX::Queue
+has 'no_binary_oid' => sub { $ENV{MANGOX_QUEUE_NO_BINARY_OID} // 0 };
 
 # Current number of jobs that have been consumed but not yet completed
 has 'job_count' => 0;
@@ -322,6 +325,7 @@ sub update {
 
     # FIXME Temporary fix to remove has_finished indicator from MangoX::Queue::Job
     $job = { map { $_ => $job->{$_} } grep { $_ !~ /^(?:has_finished|events)$/ } keys %$job };
+    $job->{_id} = Mango::BSON::ObjectID->new($job->{_id}) if $self->no_binary_oid;
 
     if($callback) {
         return $self->collection->update({'_id' => $job->{_id}}, $job => sub {
@@ -410,6 +414,7 @@ sub _consume_blocking {
         }
 
         if($doc) {
+            $doc->{_id} = $doc->{_id}->to_string if $self->no_binary_oid;
             $self->emit_safe(consumed => $doc) if $self->has_subscribers('consumed');
             return $doc;
         } else {
@@ -462,6 +467,8 @@ sub _consume_nonblocking {
         }
 
         if($doc) {
+            $doc->{_id} = $doc->{_id}->to_string if $self->no_binary_oid;
+
             $self->job_count($self->job_count + 1);
             $self->log->debug("job_count incremented to " . $self->job_count);
 
@@ -651,6 +658,13 @@ finished processing it), you can call the C<finished> method on the L<MangoX::Qu
     $self->failed_status('Failed');
 
 Set a custom failed status.
+
+=head2 no_binary_oid
+
+    $no_bin = $self->no_binary_oid;
+    $self->no_binary_oid(1);
+
+Set to 1 to disable binary ObjectIDs being returned by MangoX::Queue in the Job object.
 
 =head2 pending_status
 

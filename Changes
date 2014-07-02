@@ -1,5 +1,8 @@
 Revision history for Perl module MangoX::Queue
 
+0.15 2014-07-02
+ - Add no_binary_oid option to disable binary Object IDs
+
 0.14 2014-07-02
  - Remove 'events' from job data written to MongoDB
 
