@@ -1,5 +1,8 @@
 Revision history for Perl module MangoX::Queue
 
+0.16 2014-09-08
+ - Add delay_compat option (thanks @oliwer)
+
 0.15 2014-07-02
  - Add no_binary_oid option to disable binary Object IDs
 

@@ -22,4 +22,4 @@ requires:
   Mango: 0.43
 resources:
   repository: https://github.com/ian-kent/MangoX-Queue
-version: 0.15
+version: 0.16

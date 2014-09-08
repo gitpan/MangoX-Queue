@@ -8,7 +8,7 @@ use Mango::BSON ':bson';
 use MangoX::Queue::Delay;
 use MangoX::Queue::Job;
 
-our $VERSION = '0.15';
+our $VERSION = '0.16';
 
 # A logger
 has 'log' => sub { Mojo::Log->new->level('error') };
@@ -42,6 +42,9 @@ has 'consumers' => sub { {} };
 # Store plugins
 has 'plugins' => sub { {} };
 
+# Compatibility with Mojo::IOLoop->delay
+has 'delay_compat' => sub { warn "delay_compat will be enabled by default in a future release - please migrate your code"; 0 };
+
 sub new {
     my $self = shift->SUPER::new(@_);
 
@@ -63,8 +66,8 @@ sub plugin {
     }
 
     eval {
-        $self->plugins->{$name} = $name->new(%$options);  
-        return 1;          
+        $self->plugins->{$name} = $name->new(%$options);
+        return 1;
     } or croak qq{Error calling constructor for plugin $name: $@};
 
     eval {
@@ -157,6 +160,16 @@ sub get_options {
     };
 }
 
+sub run_callback {
+	my ($self, $callback) = (shift, shift);
+
+	if ($self->delay_compat) {
+		$callback->($self, @_);
+	} else {
+		$callback->(@_);
+	}
+}
+
 sub enqueue {
     my ($self, @args) = @_;
 
@@ -188,13 +201,13 @@ sub enqueue {
             my ($collection, $error, $oid) = @_;
             if($error) {
                 $self->emit_safe(error => qq{Error inserting job into collection: $error}, $db_job, $error);
-                $callback->($db_job, $error);
+                $self->run_callback($callback, $db_job, $error);
                 return;
             }
             $db_job->{_id} = $oid;
             $self->emit_safe(enqueued => $db_job) if $self->has_subscribers('enqueued');
             eval {
-                $callback->($db_job, undef);
+                $self->run_callback($callback, $db_job, undef);
                 return 1;
             } or $self->emit_safe(error => qq{Error in callback: $@}, $db_job, $@);
         });
@@ -250,11 +263,11 @@ sub _watch_nonblocking {
     $self->collection->find_one({'_id' => $id} => sub {
         my ($cursor, $err, $doc) = @_;
         $self->log->debug("Job found by Mango: " . ($doc ? 'Yes' : 'No'));
-        
+
         if($doc && ((!ref($status) && $doc->{status} eq $status) || (ref($status) eq 'ARRAY' && grep { $_ =~ $doc->{status} } @$status))) {
             $self->log->debug("Status is $status");
             $self->delay->reset;
-            $callback->($doc, undef);
+            $self->run_callback($callback, $doc, undef);
         } else {
             $self->log->debug("Job not found or status doesn't match");
             $self->delay->wait(sub {
@@ -287,11 +300,11 @@ sub dequeue {
 
             if($error) {
                 $self->emit_safe(error => qq(Error removing job from collection: $error), $id_or_job, $error) if $self->has_subscribers('error');
-                $callback->($id_or_job, $error);
+                $self->run_callback($callback, $id_or_job, $error);
                 return;
             }
 
-            $callback->($id_or_job, undef);
+            $self->run_callback($callback, $id_or_job, undef);
             $self->emit_safe(dequeued => $id_or_job) if $self->has_subscribers('dequeued');
         });
     } else {
@@ -313,7 +326,7 @@ sub get {
                 $self->emit_safe(error => qq(Error retrieving job: $error), $id_or_job, $error) if $self->has_subscribers('error');
             }
 
-            $callback->($doc, $error);
+            $self->run_callback($callback, $doc, $error);
         });
     } else {
         return $self->collection->find_one({'_id' => $id});
@@ -333,7 +346,7 @@ sub update {
             if($error) {
                 $self->emit_safe(error => qq(Error updating job: $error), $job, $error) if $self->has_subscribers('error');
             }
-            $callback->($doc, $error);
+            $self->run_callback($callback, $doc, $error);
         });
     } else {
         return $self->collection->update({'_id' => $job->{_id}}, $job, {upsert => 1}) or croak qq{Error updating collection: $@};
@@ -458,7 +471,7 @@ sub _consume_nonblocking {
             $self->log->error($err);
             $self->emit_safe(error => $err);
         }
-        
+
         if($doc && $doc->{attempt} > $self->retries) {
             $doc->{status} = $self->{_failed_status} // $self->init_status->{_failed_status};
             $self->update($doc);
@@ -482,13 +495,13 @@ sub _consume_nonblocking {
             $self->emit_safe(consumed => $job) if $self->has_subscribers('consumed');
 
             eval {
-                $callback->($job);
+                $self->run_callback($callback, $job);
                 return 1;
             } or $self->emit_safe(error => "Error in callback: $@");
             return unless Mojo::IOLoop->is_running;
             return if $fetch;
             return unless exists $self->consumers->{$consumer_id};
-            Mojo::IOLoop->timer(0, sub { 
+            Mojo::IOLoop->timer(0, sub {
                 $self->_consume_nonblocking($args, $consumer_id, $callback, 0) }
             );
             $self->log->debug("Timer rescheduled (recursive immediate), consumer_id $consumer_id has timer ID: " . $self->consumers->{$consumer_id});
@@ -523,6 +536,10 @@ collection - pass in a collection to the constructor and L<MangoX::Queue> will
 use it. The collection can be plain, capped or sharded.
 
 For an introduction to L<MangoX::Queue>, see L<MangoX::Queue::Tutorial>.
+
+B<API change> - the current API is inconsistent with L<Mojo::IOLoop> and other L<Mojolicious>
+modules. A C<delay_compat> option has been added, which is currently disabled by default.
+This will be enabled by default in a future release, and eventually deprecated.
 
 =head1 SYNOPSIS
 
@@ -632,6 +649,19 @@ The L<Mango::Collection> representing the MongoDB queue collection.
 
 The L<MangoX::Queue::Delay> responsible for dynamically controlling the
 delay between queue queries.
+
+=head2 delay_compat
+
+    my $compat = $queue->delay_compat;
+    $queue->delay_compat(1);
+
+Enabling C<delay_compat> passes C<$self> as the first argument to queue
+callbacks, to fix a compatibility bug with L<Mojo::IOLoop>.
+
+This will be enabled by default in a future release. Please migrate your
+code to work with the new API, and enable C<delay_compat> on construction:
+
+    my $queue = MangoX::Queue->new(delay_compat => 1);
 
 =head2 concurrent_job_limit
 
@@ -782,7 +812,7 @@ Add an item to the queue in blocking mode. The default priority is 1 and status 
 
 You can set queue options including priority, created and status.
 
-    my $id = enqueue $queue,  
+    my $id = enqueue $queue,
         priority => 1,
         created => bson_time,
         status => 'Pending',
@@ -914,6 +944,7 @@ you can check for an error argument to the callback sub:
 =over
 
 =item Ben Vinnerd, ben@vinnerd.com
+=item Olivier Duclos, github.com/oliwer
 
 =back
 
